@@ -100,6 +100,46 @@ test('initWatcher should create a configured DockerApi instance', () => {
     expect(docker.dockerApi.modem.socketPath).toBe(configurationValid.socket);
 });
 
+test('should handle docker events parsing error', async () => {
+    await docker.register('watcher', 'docker', 'test', {});
+    const mockLog = {
+        warn: jest.fn(),
+        debug: jest.fn(),
+        info: jest.fn(),
+    };
+    docker.log = mockLog;
+    await docker.onDockerEvent(Buffer.from('{"Action":"create"'));
+    expect(mockLog.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Unable to parse Docker event'),
+    );
+});
+
+test('should process chunked create/destroy events', async () => {
+    const mockStream = { on: jest.fn() };
+    mockDockerApi.getEvents.mockImplementation((options, callback) => {
+        callback(null, mockStream);
+    });
+    docker.onDockerEvent = jest.fn();
+
+    await docker.register('watcher', 'docker', 'test', {});
+    await docker.listenDockerEvents();
+
+    const dataHandler = mockStream.on.mock.calls.find(
+        (c) => c[0] === 'data',
+    )[1];
+    dataHandler(Buffer.from('{"Action":"create"'));
+    dataHandler(Buffer.from(',"id":"container123"}'));
+    expect(docker.onDockerEvent).not.toHaveBeenCalled();
+
+    dataHandler(Buffer.from('\n'));
+    expect(docker.onDockerEvent).toHaveBeenCalledTimes(1);
+
+    const calledWith = docker.onDockerEvent.mock.calls[0][0].toString();
+    expect(calledWith).toBe(
+        '{"Action":"create","id":"container123"}\n',
+    );
+});
+
 const getTagCandidatesTestCases = [
     {
         source: sampleSemver,
